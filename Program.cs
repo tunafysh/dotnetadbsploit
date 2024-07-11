@@ -2,206 +2,178 @@
 using System.Net;
 using System.Runtime.InteropServices;
 using System.IO.Compression;
+using System.Text;
 using AdvancedSharpAdbClient;
-using AdvancedSharpAdbClient.Models;
-
-using System.Security.Cryptography;
 using AdvancedSharpAdbClient.DeviceCommands;
-using System.ComponentModel.DataAnnotations;
-using System.Diagnostics;
-using System.Net.Sockets;
-using System;
+using AdvancedSharpAdbClient.Logs;
+using AdvancedSharpAdbClient.Models;
+using NUDev.ADBSharp;
+using Newtonsoft.Json;
+using System.Threading.Tasks;
 
-DeviceData device = new();
-
-string subprompt(string promptmessage = "Title")
+public partial class Config
 {
-
-    string prefix = "└─";
-    string arrow = "─> ";
-
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.Write(prefix);
-    Console.ForegroundColor = ConsoleColor.White;
-    Console.Write(promptmessage);
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.Write(arrow);
-    Console.ForegroundColor = ConsoleColor.White;
-    string input = Console.ReadLine();
-    return input;
+    public ConsoleColor Foregroundcolor { get; set; } = ConsoleColor.Red;
+    public ConsoleColor Backgroundcolor { get; set; } = ConsoleColor.Black;
+    public string Prefix { get; set; } = "└─";
+    public string Arrow { get; set; } = "─> ";
+    public string Braces { get; set; } = "()";
+    public bool DebugMode { get; set; } = false;
 }
 
-string prompt(string promptmessage = "ADBSploit")
+public class Program
 {
-    string prefix = "(";
-    string arrow = ")─> ";
+    private const string ConfigFileName = "config.json";
+    private Config _config;
+    private DeviceData _device = new();
+    private AdbClient adbClient = new();
 
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.Write(prefix);
-    Console.ForegroundColor = ConsoleColor.White;
-    Console.Write(promptmessage);
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.Write(arrow);
-    Console.ForegroundColor = ConsoleColor.White;
-    string input = Console.ReadLine();
-    return input;
-}
-
-void bootstrap()
-{
-    Console.WriteLine("Bootstrapping packages.");
-
-    Log.Information("Downloading adb and fastboot.");
-    WebClient wc = new();
-    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+    private async Task InitializeConfigAsync()
     {
-        wc.DownloadFile("https://dl.google.com/android/repository/platform-tools-latest-windows.zip", @"platform-tools.zip");
-    }
-    else
-    {
-        wc.DownloadFile("https://dl.google.com/android/repository/platform-tools-latest-linux.zip", @"platform-tools.zip");
+        if (!File.Exists(ConfigFileName))
+        {
+            await WriteDefaultConfigAsync();
+        }
+
+        _config = JsonConvert.DeserializeObject<Config>(await File.ReadAllTextAsync(ConfigFileName));
+
+        Console.BackgroundColor = _config.Backgroundcolor;
     }
 
-    Log.Information("Extracting tools.");
-
-    ZipFile.ExtractToDirectory(@"platform-tools.zip", @"adb");
-
-    Console.WriteLine("Bootstrapping done.");
-}
-
-string ver = "0.1";
-
-Log.Logger = new LoggerConfiguration()
-    .WriteTo.File("log-.txt", rollingInterval: RollingInterval.Day)
-    .CreateLogger();
-
-Log.Information("Starting ADBSploit...");
-Console.WriteLine("ADBSploit. Version: {0}, OS: {1}, Platform: {2}", ver, RuntimeInformation.OSDescription, RuntimeInformation.ProcessArchitecture);
-Log.Information("Checking for adb directory");
-
-if (!Directory.Exists(@"adb"))
-{
-    Log.Warning("Directory doesn't exist. Creating directory.");
-    Directory.CreateDirectory(@"adb");
-
-    bootstrap();
-}
-
-Console.WriteLine("Starting up the ADB Client.");
-
-if (!AdbServer.Instance.GetStatus().IsRunning)
-{
-    AdbServer server = new AdbServer();
-    StartServerResult result = server.StartServer(@"adb\platform-tools\adb.exe", false);
-    if (result != StartServerResult.Started)
+    private async Task WriteDefaultConfigAsync()
     {
-        Console.WriteLine("Can't start adb server");
+        var defaultConfig = new Config();
+        var configJson = JsonConvert.SerializeObject(defaultConfig, Formatting.Indented);
+        await File.WriteAllTextAsync(ConfigFileName, configJson);
     }
-}
 
-Console.WriteLine("ADB is up.");
-
-AdbClient adbClient;
-
-adbClient = new AdbClient();
-adbClient.Connect("127.0.0.1:62001");
-
-
-string userinp;
-string subinp;
-do
-{
-    Program program = new();
-    if (device.Model == "")
+    private string SubPrompt(string promptMessage = "Title")
     {
-        userinp = prompt();
+        Console.ForegroundColor = _config.Foregroundcolor;
+        Console.Write(_config.Prefix);
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.Write(promptMessage);
+        Console.ForegroundColor = _config.Foregroundcolor;
+        Console.Write(_config.Arrow);
+        Console.ForegroundColor = ConsoleColor.White;
+        return Console.ReadLine();
     }
-    else
+
+    private string Prompt(string promptMessage = "ADBSploit")
     {
-        userinp = prompt(device.Model);
+        Console.ForegroundColor = _config.Foregroundcolor;
+        Console.Write($"{_config.Braces[0]}");
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.Write(promptMessage);
+        Console.ForegroundColor = _config.Foregroundcolor;
+        Console.Write($"{_config.Braces[1]}+{_config.Arrow}");
+        Console.ForegroundColor = ConsoleColor.White;
+        return Console.ReadLine();
     }
-    switch (userinp)
+
+    private async Task BootstrapAsync()
     {
-        default: Console.WriteLine("Not a command. Type \"help\" to get a list of commands."); break;
-        case "connect":
-            subinp = subprompt("Enter the IP Address of the device.");
-            try
+        Console.WriteLine("Bootstrapping packages.");
+
+        Log.Information("Downloading adb and fastboot.");
+        using WebClient wc = new();
+        var url = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+            : "https://dl.google.com/android/repository/platform-tools-latest-linux.zip";
+        await wc.DownloadFileTaskAsync(url, @"platform-tools.zip");
+
+        Log.Information("Extracting tools.");
+
+        ZipFile.ExtractToDirectory(@"platform-tools.zip", @"adb");
+
+        File.Delete(@"platform-tools.zip");
+
+        Console.WriteLine("Bootstrapping done.");
+    }
+    private Dictionary<string, Action> _commands;
+
+    public Program()
+    {
+        _commands = new Dictionary<string, Action>
+        {
+            { "connect", Connect },
+            { "select", Select },
+            { "help", Help }
+        };
+    }
+
+    static void Main()
+    {
+        var args = new Program();
+
+        args.InitializeConfigAsync().Wait();
+
+        if (!Directory.Exists(@"adb"))
+        {
+            Log.Warning("Directory doesn't exist. Creating directory.");
+            Directory.CreateDirectory(@"adb");
+
+            args.BootstrapAsync().Wait();
+        }
+
+        string userInput;
+        do
+        {
+            userInput = args._device.Model == "" ? args.Prompt() : args.Prompt(args._device.Model);
+            if (args._commands.ContainsKey(userInput))
             {
-                adbClient.Connect(subinp);
+                //execute action from key im dict.
+                Action command = args._commands[userInput];
+                command.Invoke();
             }
-            catch
+            else
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Device/IP address not found.");
+                Console.WriteLine("Not a command. Type \"help\" to get a list of commands.");
             }
-            break;
-        case "select":
-            subinp = subprompt("Enter the number of the device");
-            int subint = int.Parse(subinp) - 1;
-            try
-            {
-                device = adbClient.GetDevices().ToArray()[subint];
-            }
-            catch
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Device number is larger and such device doesn't exist. Please use the \"devices\" command to see how many devices are connected.");
-                break;
-            }
-            break;
-        case "reboot":
-            if (device.Model == "")
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("No device selected.");
-                break;
-            }
-            adbClient.Reboot(device);
-            break;
-        case "exit":
-            Console.WriteLine("Exiting.");
-            Log.Warning("Flushing everything and exiting");
-            Log.CloseAndFlush();
-            adbClient.KillAdb();
-            Environment.Exit(0);
-            break;
-        case "debug":
-            subinp = subprompt("Enter debug subprompt");
-            Console.WriteLine("Entered text was: {0}", subinp);
-            break;
-        case "devices":
-            Log.Information("Getting Devices");
-            adbClient.GetDevices().ToList().ForEach(device =>
-            {
-                Console.WriteLine(device.Model);
-                Log.Information("Devices found: {0}", device.Model);
-            });
-            break;
-        case "help":
-            Log.Information("Displaying help");
-            Console.WriteLine("\n\tCommands:\n\n");
-            Console.WriteLine("\thelp\t\t\tDisplays this message.");
-            Console.WriteLine("\tdevices\t\t\tShows all connected devices.");
-            Console.WriteLine("\tversion\t\t\tDisplays the current version of the tool and adb.");
-            Console.WriteLine("\texit\t\t\tExits this tool and goes back to the command line.");
-            Console.WriteLine("\tclear/cls\t\tClears the terminal.");
-            Console.WriteLine("\tselect\t\t\tSelects a device based on the order.");
-            Console.WriteLine("\n");
-            break;
-        case "version":
-            Log.Information("Displaying version");
-            Console.WriteLine("Adbsploit version: {0}\nAdb version: {1}", ver, adbClient.GetAdbVersion());
-            break;
-        case "cls":
-            Log.Information("Clearing Console");
-            Console.Clear();
-            break;
-        case "clear":
-            Log.Information("Clearing Console");
-            Console.Clear();
-            break;
-        case "":
-            break;
+        }
+        while (true);
     }
+
+    private void Connect()
+    {
+        var subInput = SubPrompt("Enter the IP Address of the device.");
+        try
+        {
+            adbClient.Connect(subInput);
+        }
+        catch
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("Device/IP address not found.");
+        }
+    }
+
+    private void Select()
+    {
+        var subInput = SubPrompt("Enter the number of the device");
+        int subInt = int.Parse(subInput) - 1;
+        try
+        {
+            _device = adbClient.GetDevices().ToArray()[subInt];
+        }
+        catch
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("Device number is larger and such device doesn't exist. Please use the \"devices\" command to see how many devices are connected.");
+        }
+    }
+
+    private void Help()
+    {
+        Log.Information("Displaying help");
+        Console.WriteLine("\n\tCommands:\n\n");
+        Console.WriteLine("\thelp\t\t\tDisplays this message.");
+        Console.WriteLine("\tdevices\t\t\tShows all connected devices.");
+        Console.WriteLine("\tversion\t\t\tDisplays the current version of the tool and adb.");
+        Console.WriteLine("\texit\t\t\tExits this tool and goes back to the command line.");
+        Console.WriteLine("\tclear/cls\t\tClears the terminal.");
+        Console.WriteLine("\tselect\t\t\tSelects a device based on the order.");
+        Console.WriteLine("\n");
+    }
+
 }
-while (true);
